@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	flag "github.com/spf13/pflag"
 
 	"github.com/adruban/osem/internal/bookmarks"
 	"github.com/adruban/osem/internal/db"
@@ -25,15 +25,15 @@ var (
 
 func main() {
 	var (
-		showVersion       = flag.Bool("v", false, "show version")
-		listMode          = flag.Bool("l", false, "list sessions (non-interactive)")
+		showVersion       = flag.BoolP("version", "v", false, "show version")
+		listMode          = flag.BoolP("list", "l", false, "list sessions (non-interactive)")
 		statsMode         = flag.Bool("stats", false, "show session statistics")
 		pruneMode         = flag.Bool("prune", false, "list sessions with default titles")
-		pruneDelete       = flag.Bool("delete", false, "delete pruned sessions (use with -prune)")
+		pruneDelete       = flag.Bool("delete", false, "delete pruned sessions (use with --prune)")
 		backupID          = flag.String("backup", "", "export session to JSON")
 		searchQuery       = flag.String("grep", "", "search sessions by title")
 		infoID            = flag.String("info", "", "show session details")
-		sessionID         = flag.String("s", "", "open session by ID")
+		sessionID         = flag.StringP("session", "s", "", "open session by ID")
 		bookmarkAdd       = flag.String("bookmark", "", "add session to bookmarks")
 		bookmarkRemove    = flag.String("unbookmark", "", "remove session from bookmarks")
 		listBookmarksMode = flag.Bool("bookmarks", false, "list all bookmarks")
@@ -41,7 +41,7 @@ func main() {
 		filterYesterday   = flag.Bool("yesterday", false, "list yesterday's sessions")
 		filterWeek        = flag.Bool("week", false, "list sessions from last 7 days")
 		filterMonth       = flag.Bool("month", false, "list sessions from last 30 days")
-		pageNum           = flag.Int("page", 0, "page number (0=first, requires -l)")
+		pageNum           = flag.Int("page", 0, "page number (0=first, use with --list)")
 		pageSize          = flag.Int("page-size", 50, "sessions per page (default: 50)")
 	)
 	flag.Parse()
