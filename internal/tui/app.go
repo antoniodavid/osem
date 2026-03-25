@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -17,12 +18,16 @@ import (
 type sessionItem struct {
 	session      models.Session
 	isTmuxActive bool
+	isBookmark   bool
+	groupName    string
 }
 
 func (i sessionItem) FilterValue() string { return i.session.Title }
 func (i sessionItem) Title() string {
 	prefix := ""
-	if i.isTmuxActive {
+	if i.isBookmark {
+		prefix = "★ "
+	} else if i.isTmuxActive {
 		prefix = "● "
 	}
 	return prefix + i.session.Title
@@ -38,29 +43,28 @@ func truncateDir(dir string, maxLen int) string {
 	if len(dir) <= maxLen {
 		return dir
 	}
-	home := "~"
 	if strings.HasPrefix(dir, "/home/") {
 		parts := strings.SplitN(dir, "/", 4)
 		if len(parts) >= 4 {
-			home = "~/" + parts[3]
-		}
-		if len(home) <= maxLen {
-			return home
+			short := "~/" + parts[3]
+			if len(short) <= maxLen {
+				return short
+			}
+			return "..." + short[len(short)-maxLen+3:]
 		}
 	}
-	if len(dir) > maxLen {
-		return "..." + dir[len(dir)-maxLen+3:]
-	}
-	return dir
+	return "..." + dir[len(dir)-maxLen+3:]
 }
 
 type keymap struct {
 	selectKey key.Binding
 	delete    key.Binding
 	bookmark  key.Binding
-	rename    key.Binding
+	toggleBm  key.Binding
 	search    key.Binding
 	quit      key.Binding
+	nextGroup key.Binding
+	prevGroup key.Binding
 }
 
 func defaultKeymap() keymap {
@@ -77,9 +81,9 @@ func defaultKeymap() keymap {
 			key.WithKeys("f"),
 			key.WithHelp("f", "bookmark"),
 		),
-		rename: key.NewBinding(
-			key.WithKeys("r"),
-			key.WithHelp("r", "rename"),
+		toggleBm: key.NewBinding(
+			key.WithKeys("b"),
+			key.WithHelp("b", "toggle bookmarks"),
 		),
 		search: key.NewBinding(
 			key.WithKeys("/"),
@@ -89,21 +93,37 @@ func defaultKeymap() keymap {
 			key.WithKeys("q", "ctrl+c", "esc"),
 			key.WithHelp("q/esc", "quit"),
 		),
+		nextGroup: key.NewBinding(
+			key.WithKeys("n", "right"),
+			key.WithHelp("n/→", "next group"),
+		),
+		prevGroup: key.NewBinding(
+			key.WithKeys("p", "left"),
+			key.WithHelp("p/←", "prev group"),
+		),
 	}
 }
 
+type sessionGroup struct {
+	Name     string
+	Sessions []models.Session
+}
+
 type Model struct {
-	list      list.Model
-	db        *db.Client
-	bookmarks *bookmarks.Manager
-	tmuxMgr   *tmux.Manager
-	sessions  []models.Session
-	selected  *models.Session
-	quitting  bool
-	err       error
-	keys      keymap
-	width     int
-	height    int
+	list         list.Model
+	db           *db.Client
+	bookmarks    *bookmarks.Manager
+	tmuxMgr      *tmux.Manager
+	sessions     []models.Session
+	groups       []sessionGroup
+	currentGroup int
+	bookmarkMode bool
+	selected     *models.Session
+	quitting     bool
+	err          error
+	keys         keymap
+	width        int
+	height       int
 }
 
 type sessionLoadedMsg []models.Session
@@ -140,11 +160,59 @@ func (m *Model) Init() tea.Cmd {
 }
 
 func (m *Model) loadSessions() tea.Msg {
-	sessions, err := m.db.ListSessions(100)
+	sessions, err := m.db.ListSessions(500)
 	if err != nil {
 		return errorMsg(err)
 	}
 	return sessionLoadedMsg(sessions)
+}
+
+func (m *Model) groupSessions(sessions []models.Session) []sessionGroup {
+	var bookmarks, today, yesterday, thisWeek, thisMonth, older []models.Session
+	now := time.Now()
+
+	for _, s := range sessions {
+		if m.bookmarks != nil && m.bookmarks.IsBookmarked(s.ID) {
+			bookmarks = append(bookmarks, s)
+			continue
+		}
+
+		age := now.Sub(s.UpdatedAt)
+		switch {
+		case age < 24*time.Hour:
+			today = append(today, s)
+		case age < 48*time.Hour:
+			yesterday = append(yesterday, s)
+		case age < 7*24*time.Hour:
+			thisWeek = append(thisWeek, s)
+		case age < 30*24*time.Hour:
+			thisMonth = append(thisMonth, s)
+		default:
+			older = append(older, s)
+		}
+	}
+
+	var groups []sessionGroup
+	if len(bookmarks) > 0 {
+		groups = append(groups, sessionGroup{Name: "★ Bookmarks", Sessions: bookmarks})
+	}
+	if len(today) > 0 {
+		groups = append(groups, sessionGroup{Name: "Today", Sessions: today})
+	}
+	if len(yesterday) > 0 {
+		groups = append(groups, sessionGroup{Name: "Yesterday", Sessions: yesterday})
+	}
+	if len(thisWeek) > 0 {
+		groups = append(groups, sessionGroup{Name: "This Week", Sessions: thisWeek})
+	}
+	if len(thisMonth) > 0 {
+		groups = append(groups, sessionGroup{Name: "This Month", Sessions: thisMonth})
+	}
+	if len(older) > 0 {
+		groups = append(groups, sessionGroup{Name: "Older", Sessions: older})
+	}
+
+	return groups
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -157,20 +225,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionLoadedMsg:
 		m.sessions = msg
-		items := make([]list.Item, len(msg))
-		activeSessions, _ := m.tmuxMgr.ListOpencodeSessions()
-		for i, s := range msg {
-			shortID := s.ShortID()
-			isActive := false
-			for _, as := range activeSessions {
-				if strings.Contains(as, shortID) {
-					isActive = true
-					break
-				}
-			}
-			items[i] = sessionItem{session: s, isTmuxActive: isActive}
+		m.groups = m.groupSessions(msg)
+		if len(m.groups) > 0 {
+			m.currentGroup = 0
+			m.updateList()
 		}
-		return m, m.list.SetItems(items)
+		return m, nil
 
 	case errorMsg:
 		m.err = msg
@@ -208,14 +268,76 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.bookmarks.Add(item.session.ID, "")
 				}
+				m.groups = m.groupSessions(m.sessions)
+				m.updateList()
 				return m, nil
 			}
+
+		case key.Matches(msg, m.keys.toggleBm):
+			m.bookmarkMode = !m.bookmarkMode
+			m.currentGroup = 0
+			if m.bookmarkMode {
+				m.list.Title = "Bookmarked Sessions"
+			} else {
+				m.list.Title = "OpenCode Sessions"
+			}
+			m.groups = m.groupSessions(m.sessions)
+			m.updateList()
+			return m, nil
+
+		case key.Matches(msg, m.keys.nextGroup):
+			if len(m.groups) > 0 && m.currentGroup < len(m.groups)-1 {
+				m.currentGroup++
+				m.updateList()
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.prevGroup):
+			if m.currentGroup > 0 {
+				m.currentGroup--
+				m.updateList()
+			}
+			return m, nil
 		}
 	}
 
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) updateList() {
+	if len(m.groups) == 0 || m.currentGroup >= len(m.groups) {
+		return
+	}
+
+	group := m.groups[m.currentGroup]
+	items := make([]list.Item, 0, len(group.Sessions)+1)
+
+	// Group header as first item
+	type groupHeader struct{}
+
+	activeSessions, _ := m.tmuxMgr.ListOpencodeSessions()
+
+	for _, s := range group.Sessions {
+		shortID := s.ShortID()
+		isActive := false
+		for _, as := range activeSessions {
+			if strings.Contains(as, shortID) {
+				isActive = true
+				break
+			}
+		}
+		items = append(items, sessionItem{
+			session:      s,
+			isTmuxActive: isActive,
+			isBookmark:   m.bookmarks != nil && m.bookmarks.IsBookmarked(s.ID),
+			groupName:    group.Name,
+		})
+	}
+
+	m.list.SetItems(items)
+	m.list.Title = fmt.Sprintf("%s (%d sessions)", group.Name, len(group.Sessions))
 }
 
 func (m *Model) View() string {
@@ -230,25 +352,50 @@ func (m *Model) View() string {
 		b.WriteString("\n\n")
 	}
 
+	// Group navigation
+	if len(m.groups) > 0 {
+		nav := make([]string, len(m.groups))
+		for i, g := range m.groups {
+			if i == m.currentGroup {
+				nav[i] = fmt.Sprintf("[%s (%d)]", g.Name, len(g.Sessions))
+			} else {
+				nav[i] = fmt.Sprintf("%s (%d)", g.Name, len(g.Sessions))
+			}
+		}
+		b.WriteString(helpStyle.Render(strings.Join(nav, " → ")))
+		b.WriteString("\n\n")
+	}
+
 	// Main list
 	b.WriteString(m.list.View())
 
 	// Footer with help
 	b.WriteString("\n")
-	b.WriteString(renderHelp(m.keys))
+	b.WriteString(renderHelp(m.keys, m.bookmarkMode, len(m.groups), m.currentGroup))
 
 	return b.String()
 }
 
-func renderHelp(keys keymap) string {
-	help := strings.Join([]string{
-		"enter: select",
-		"d: delete",
-		"f: bookmark",
-		"/: search",
-		"q: quit",
-	}, " • ")
-	return helpStyle.Render(help)
+func renderHelp(keys keymap, bookmarkMode bool, totalGroups, currentGroup int) string {
+	var parts []string
+	parts = append(parts, "enter: select")
+	parts = append(parts, "d: delete")
+	parts = append(parts, "f: bookmark")
+
+	if bookmarkMode {
+		parts = append(parts, "b: all sessions")
+	} else {
+		parts = append(parts, "b: bookmarks only")
+	}
+
+	if totalGroups > 1 {
+		parts = append(parts, "n/p: next/prev group")
+	}
+
+	parts = append(parts, "/: search")
+	parts = append(parts, "q: quit")
+
+	return helpStyle.Render(strings.Join(parts, " • "))
 }
 
 func (m *Model) SelectedSession() *models.Session {
