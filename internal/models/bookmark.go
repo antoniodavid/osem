@@ -32,7 +32,7 @@ func (b *BookmarksConfig) Add(sessionID, alias string) {
 func (b *BookmarksConfig) Remove(sessionID string) {
 	for i, bm := range b.Bookmarks {
 		if bm.SessionID == sessionID {
-			b.Bookmarks = append(b.Bookmarks[:i], b.Bookmarks[:i+1]...)
+			b.Bookmarks = append(b.Bookmarks[:i], b.Bookmarks[i+1:]...)
 			return
 		}
 	}

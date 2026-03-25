@@ -87,13 +87,16 @@ func (c *Client) GetSessionByID(id string) (*models.Session, error) {
 			time_updated,
 			time_created
 		FROM session
-		WHERE id = ? OR id LIKE ?
+		WHERE id = ? OR id LIKE ? OR SUBSTR(id, 1, ?) = ?
+		ORDER BY time_updated DESC
+		LIMIT 1
 	`
 
 	var s models.Session
 	var updatedAt, createdAt int64
 
-	err := c.db.QueryRow(query, id, id+"%").Scan(
+	// Try exact match, then prefix match, then substring match for short ID
+	err := c.db.QueryRow(query, id, id+"%", len(id), id).Scan(
 		&s.ID,
 		&s.Title,
 		&s.Directory,

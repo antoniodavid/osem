@@ -24,15 +24,18 @@ var (
 
 func main() {
 	var (
-		showVersion = flag.Bool("v", false, "show version")
-		listMode    = flag.Bool("l", false, "list sessions (non-interactive)")
-		statsMode   = flag.Bool("stats", false, "show session statistics")
-		pruneMode   = flag.Bool("prune", false, "list sessions with default titles")
-		pruneDelete = flag.Bool("delete", false, "delete pruned sessions (use with -prune)")
-		backupID    = flag.String("backup", "", "export session to JSON")
-		searchQuery = flag.String("grep", "", "search sessions by title")
-		infoID      = flag.String("info", "", "show session details")
-		sessionID   = flag.String("s", "", "open session by ID")
+		showVersion       = flag.Bool("v", false, "show version")
+		listMode          = flag.Bool("l", false, "list sessions (non-interactive)")
+		statsMode         = flag.Bool("stats", false, "show session statistics")
+		pruneMode         = flag.Bool("prune", false, "list sessions with default titles")
+		pruneDelete       = flag.Bool("delete", false, "delete pruned sessions (use with -prune)")
+		backupID          = flag.String("backup", "", "export session to JSON")
+		searchQuery       = flag.String("grep", "", "search sessions by title")
+		infoID            = flag.String("info", "", "show session details")
+		sessionID         = flag.String("s", "", "open session by ID")
+		bookmarkAdd       = flag.String("bookmark", "", "add session to bookmarks")
+		bookmarkRemove    = flag.String("unbookmark", "", "remove session from bookmarks")
+		listBookmarksMode = flag.Bool("bookmarks", false, "list all bookmarks")
 	)
 	flag.Parse()
 
@@ -61,7 +64,7 @@ func main() {
 
 	switch {
 	case *listMode:
-		listSessions(dbClient)
+		listSessions(dbClient, bmMgr)
 	case *statsMode:
 		showStats(dbClient)
 	case *pruneMode:
@@ -72,6 +75,12 @@ func main() {
 		searchSessions(dbClient, *searchQuery)
 	case *infoID != "":
 		showSessionInfo(dbClient, *infoID)
+	case *bookmarkAdd != "":
+		addBookmark(dbClient, bmMgr, *bookmarkAdd)
+	case *bookmarkRemove != "":
+		removeBookmark(bmMgr, *bookmarkRemove)
+	case *listBookmarksMode:
+		listBookmarks(dbClient, bmMgr)
 	case *sessionID != "":
 		openSession(dbClient, bmMgr, *sessionID)
 	default:
@@ -79,7 +88,7 @@ func main() {
 	}
 }
 
-func listSessions(dbClient *db.Client) {
+func listSessions(dbClient *db.Client, bmMgr *bookmarks.Manager) {
 	sessions, err := dbClient.ListSessions(100)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing sessions: %v\n", err)
@@ -88,7 +97,11 @@ func listSessions(dbClient *db.Client) {
 
 	fmt.Printf("%-30s %-50s %s\n", "ID", "Title", "Updated")
 	for _, s := range sessions {
-		fmt.Printf("%-30s %-50s %s\n", s.ShortID(), s.DisplayName(), s.UpdatedAt.Format("2006-01-02 15:04"))
+		mark := " "
+		if bmMgr != nil && bmMgr.IsBookmarked(s.ID) {
+			mark = "★"
+		}
+		fmt.Printf("%s %-29s %-50s %s\n", mark, s.ShortID(), s.DisplayName(), s.UpdatedAt.Format("2006-01-02 15:04"))
 	}
 }
 
@@ -325,5 +338,75 @@ func runTUI(dbClient *db.Client, bmMgr *bookmarks.Manager) {
 			fmt.Fprintf(os.Stderr, "Error opening session: %v\n", err)
 			os.Exit(1)
 		}
+	}
+}
+
+func addBookmark(dbClient *db.Client, bmMgr *bookmarks.Manager, sessionID string) {
+	session, err := dbClient.GetSessionByID(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Session not found: %v\n", err)
+		os.Exit(1)
+	}
+
+	if bmMgr.IsBookmarked(session.ID) {
+		fmt.Printf("Already bookmarked: %s\n", session.ShortID())
+		return
+	}
+
+	if err := bmMgr.Add(session.ID, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "Error adding bookmark: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("★ Bookmarked: %s - %s\n", session.ShortID(), session.Title)
+}
+
+func removeBookmark(bmMgr *bookmarks.Manager, sessionID string) {
+	bookmarks := bmMgr.GetAll()
+
+	// Find the exact bookmark ID (bookmarks store full IDs)
+	var foundID string
+	for _, bm := range bookmarks {
+		// Match by short ID (first 12 chars) or full ID
+		if len(bm.SessionID) >= len(sessionID) {
+			if bm.SessionID == sessionID || bm.SessionID[:12] == sessionID || bm.SessionID[:len(sessionID)] == sessionID {
+				foundID = bm.SessionID
+				break
+			}
+		}
+	}
+
+	if foundID == "" {
+		fmt.Fprintf(os.Stderr, "Bookmark not found: %s\n", sessionID)
+		fmt.Fprintf(os.Stderr, "Use 'osem -bookmarks' to see your bookmarks\n")
+		os.Exit(1)
+	}
+
+	if err := bmMgr.Remove(foundID); err != nil {
+		fmt.Fprintf(os.Stderr, "Error removing bookmark: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Removed bookmark: %s\n", foundID[:12])
+}
+
+func listBookmarks(dbClient *db.Client, bmMgr *bookmarks.Manager) {
+	bookmarks := bmMgr.GetAll()
+
+	if len(bookmarks) == 0 {
+		fmt.Println("No bookmarks")
+		return
+	}
+
+	fmt.Println("\n=== Bookmarked Sessions ===")
+	fmt.Printf("%-30s %-50s\n", "ID", "Title")
+
+	for _, bm := range bookmarks {
+		session, err := dbClient.GetSessionByID(bm.SessionID)
+		if err != nil {
+			fmt.Printf("%-30s [session not found]\n", bm.SessionID[:12])
+			continue
+		}
+		fmt.Printf("%-30s %-50s\n", session.ShortID(), session.Title)
 	}
 }
