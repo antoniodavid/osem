@@ -13,6 +13,7 @@ import (
 
 	"github.com/adruban/osem/internal/bookmarks"
 	"github.com/adruban/osem/internal/db"
+	"github.com/adruban/osem/internal/models"
 	"github.com/adruban/osem/internal/tmux"
 	"github.com/adruban/osem/internal/tui"
 )
@@ -36,6 +37,12 @@ func main() {
 		bookmarkAdd       = flag.String("bookmark", "", "add session to bookmarks")
 		bookmarkRemove    = flag.String("unbookmark", "", "remove session from bookmarks")
 		listBookmarksMode = flag.Bool("bookmarks", false, "list all bookmarks")
+		filterToday       = flag.Bool("today", false, "list today's sessions")
+		filterYesterday   = flag.Bool("yesterday", false, "list yesterday's sessions")
+		filterWeek        = flag.Bool("week", false, "list sessions from last 7 days")
+		filterMonth       = flag.Bool("month", false, "list sessions from last 30 days")
+		pageNum           = flag.Int("page", 0, "page number (0=first, requires -l)")
+		pageSize          = flag.Int("page-size", 50, "sessions per page (default: 50)")
 	)
 	flag.Parse()
 
@@ -63,8 +70,8 @@ func main() {
 	}
 
 	switch {
-	case *listMode:
-		listSessions(dbClient, bmMgr)
+	case *listMode || *filterToday || *filterYesterday || *filterWeek || *filterMonth:
+		listSessionsFiltered(dbClient, bmMgr, *filterToday, *filterYesterday, *filterWeek, *filterMonth, *pageNum, *pageSize)
 	case *statsMode:
 		showStats(dbClient)
 	case *pruneMode:
@@ -102,6 +109,99 @@ func listSessions(dbClient *db.Client, bmMgr *bookmarks.Manager) {
 			mark = "★"
 		}
 		fmt.Printf("%s %-29s %-50s %s\n", mark, s.ShortID(), s.DisplayName(), s.UpdatedAt.Format("2006-01-02 15:04"))
+	}
+}
+
+func listSessionsFiltered(dbClient *db.Client, bmMgr *bookmarks.Manager, today, yesterday, week, month bool, page, pageSize int) {
+	sessions, err := dbClient.ListSessions(1000)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing sessions: %v\n", err)
+		os.Exit(1)
+	}
+
+	now := time.Now()
+	var filtered []models.Session
+
+	for _, s := range sessions {
+		age := now.Sub(s.UpdatedAt)
+
+		if today {
+			if age < 24*time.Hour {
+				filtered = append(filtered, s)
+			}
+		} else if yesterday {
+			if age >= 24*time.Hour && age < 48*time.Hour {
+				filtered = append(filtered, s)
+			}
+		} else if week {
+			if age < 7*24*time.Hour {
+				filtered = append(filtered, s)
+			}
+		} else if month {
+			if age < 30*24*time.Hour {
+				filtered = append(filtered, s)
+			}
+		} else {
+			filtered = append(filtered, s)
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println("No sessions found")
+		return
+	}
+
+	// Pagination
+	totalPages := (len(filtered) + pageSize - 1) / pageSize
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+	if page < 0 {
+		page = 0
+	}
+
+	start := page * pageSize
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	// Header
+	var filterName string
+	switch {
+	case today:
+		filterName = "Today"
+	case yesterday:
+		filterName = "Yesterday"
+	case week:
+		filterName = "Last 7 Days"
+	case month:
+		filterName = "Last 30 Days"
+	default:
+		filterName = "All Sessions"
+	}
+
+	fmt.Printf("\n=== %s ===", filterName)
+	if totalPages > 1 {
+		fmt.Printf(" (page %d/%d, %d sessions)", page+1, totalPages, len(filtered))
+	}
+	fmt.Println()
+
+	fmt.Printf("%-30s %-50s %s\n", "ID", "Title", "Updated")
+	for _, s := range filtered[start:end] {
+		mark := " "
+		if bmMgr != nil && bmMgr.IsBookmarked(s.ID) {
+			mark = "★"
+		}
+		fmt.Printf("%s %-29s %-50s %s\n", mark, s.ShortID(), s.DisplayName(), s.UpdatedAt.Format("2006-01-02 15:04"))
+	}
+
+	// Footer with pagination hint
+	if totalPages > 1 {
+		fmt.Printf("\n[page %d/%d] Use -page N for other pages\n", page+1, totalPages)
 	}
 }
 
