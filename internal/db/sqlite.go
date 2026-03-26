@@ -40,6 +40,7 @@ func (c *Client) ListSessions(limit int) ([]models.Session, error) {
 			time_updated,
 			time_created
 		FROM session
+		WHERE parent_id IS NULL
 		ORDER BY time_updated DESC
 		LIMIT ?
 	`
@@ -126,7 +127,7 @@ func (c *Client) SearchSessions(query string, limit int) ([]models.Session, erro
 			time_updated,
 			time_created
 		FROM session
-		WHERE title LIKE ? OR id LIKE ?
+		WHERE parent_id IS NULL AND (title LIKE ? OR id LIKE ?)
 		ORDER BY time_updated DESC
 		LIMIT ?
 	`
@@ -174,7 +175,7 @@ func (c *Client) GetStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
 	var totalSessions int
-	err := c.db.QueryRow("SELECT COUNT(*) FROM session").Scan(&totalSessions)
+	err := c.db.QueryRow("SELECT COUNT(*) FROM session WHERE parent_id IS NULL").Scan(&totalSessions)
 	if err != nil {
 		return nil, err
 	}
