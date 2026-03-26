@@ -33,39 +33,39 @@ go build -o ~/.local/bin/osem ./cmd/osem
 osem
 
 # List sessions (non-interactive)
-osem -l
+osem --list          # or -l
 
 # Date-filtered lists
-osem -today           # Today's sessions
-osem -yesterday       # Yesterday's sessions
-osem -week            # Last 7 days
-osem -month           # Last 30 days
+osem --today         # Today's sessions
+osem --yesterday     # Yesterday's sessions
+osem --week          # Last 7 days
+osem --month         # Last 30 days
 
 # Paginated list
-osem -l -page 2 -page-size 20
+osem --list --page 2 --page-size 20
 
 # Search sessions by title
-osem -grep "odoo"
+osem --grep "odoo"
 
 # Show stats
-osem -stats
+osem --stats
 
 # Session info
-osem -info ses_2da73dd
+osem --info ses_2da73dd
 
 # Open session by ID
-osem -s ses_2da73dd
+osem --session ses_2da73dd    # or -s
 
 # Bookmark management
-osem -bookmark ses_2da73dd    # Add bookmark
-osem -unbookmark ses_2da73dd  # Remove bookmark
-osem -bookmarks               # List all bookmarks
+osem --bookmark ses_2da73dd    # Add bookmark
+osem --unbookmark ses_2da73dd  # Remove bookmark
+osem --bookmarks               # List all bookmarks
 
 # Backup session
-osem -backup ses_2da73dd
+osem --backup ses_2da73dd
 
 # Show version
-osem -v
+osem --version       # or -v
 ```
 
 ## TUI Keybindings
@@ -97,21 +97,21 @@ OpenCode automatically changes to the session's stored directory.
 | Command | Description |
 |---------|-------------|
 | `osem` | Interactive TUI with date grouping |
-| `osem -l` | List all sessions |
-| `osem -today` | List today's sessions |
-| `osem -yesterday` | List yesterday's sessions |
-| `osem -week` | List last 7 days |
-| `osem -month` | List last 30 days |
-| `osem -grep <query>` | Search sessions by title |
-| `osem -stats` | Show statistics |
-| `osem -info <id>` | Show session details |
-| `osem -s <id>` | Open session |
-| `osem -bookmark <id>` | Add to bookmarks |
-| `osem -unbookmark <id>` | Remove from bookmarks |
-| `osem -bookmarks` | List bookmarks |
-| `osem -prune` | List sessions with default titles |
-| `osem -backup <id>` | Export session to JSON |
-| `osem -v` | Show version |
+| `osem --list`, `-l` | List all sessions |
+| `osem --today` | List today's sessions |
+| `osem --yesterday` | List yesterday's sessions |
+| `osem --week` | List last 7 days |
+| `osem --month` | List last 30 days |
+| `osem --grep <query>` | Search sessions by title |
+| `osem --stats` | Show statistics |
+| `osem --info <id>` | Show session details |
+| `osem --session <id>`, `-s` | Open session |
+| `osem --bookmark <id>` | Add to bookmarks |
+| `osem --unbookmark <id>` | Remove from bookmarks |
+| `osem --bookmarks` | List bookmarks |
+| `osem --prune` | List sessions with default titles |
+| `osem --backup <id>` | Export session to JSON |
+| `osem --version`, `-v` | Show version |
 
 ## Configuration
 
@@ -140,6 +140,7 @@ osem/
 - [bubbles](https://github.com/charmbracelet/bubbles) - TUI components
 - [lipgloss](https://github.com/charmbracelet/lipgloss) - Styling
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) - Pure Go SQLite
+- [pflag](https://github.com/spf13/pflag) - POSIX/GNU-style flag parsing
 
 ## Performance
 
