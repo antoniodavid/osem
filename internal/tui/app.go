@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,10 +15,35 @@ import (
 	"github.com/adruban/osem/internal/bookmarks"
 	"github.com/adruban/osem/internal/config"
 	"github.com/adruban/osem/internal/db"
+	"github.com/adruban/osem/internal/launcher"
 	"github.com/adruban/osem/internal/models"
-	"github.com/adruban/osem/internal/tmux"
 	"github.com/adruban/osem/internal/tui/theme"
 )
+
+const (
+	groupTime      = "time"
+	groupDirectory = "directory"
+	groupProject   = "project"
+	groupAgent     = "agent"
+	groupCost      = "cost"
+	groupActivity  = "activity"
+	groupFlat      = "flat"
+)
+
+var groupModes = []string{groupTime, groupDirectory, groupProject, groupAgent, groupCost, groupActivity, groupFlat}
+
+var groupMeta = map[string]struct {
+	emoji string
+	label string
+}{
+	groupTime:      {"🕐", "time"},
+	groupDirectory: {"📁", "dir"},
+	groupProject:   {"📦", "project"},
+	groupAgent:     {"🤖", "agent"},
+	groupCost:      {"💰", "cost"},
+	groupActivity:  {"📊", "activity"},
+	groupFlat:      {"📋", "flat"},
+}
 
 type sessionItem struct {
 	session      models.Session
@@ -26,7 +53,7 @@ type sessionItem struct {
 }
 
 func (i sessionItem) FilterValue() string {
-	return i.session.Title
+	return i.session.Title + " " + i.session.Directory
 }
 
 func (i sessionItem) Title() string {
@@ -47,6 +74,7 @@ func (i sessionItem) Description() string {
 }
 
 type keymap struct {
+	toggleGroup    key.Binding
 	selectKey     key.Binding
 	delete        key.Binding
 	bookmark      key.Binding
@@ -67,6 +95,10 @@ type keymap struct {
 
 func defaultKeymap() keymap {
 	return keymap{
+		toggleGroup: key.NewBinding(
+			key.WithKeys("g"),
+			key.WithHelp("g", "group"),
+		),
 		selectKey: key.NewBinding(
 			key.WithKeys("enter", "s"),
 			key.WithHelp("enter/s", "select"),
@@ -125,7 +157,7 @@ type Model struct {
 	list         list.Model
 	db           *db.Client
 	bookmarks    *bookmarks.Manager
-	tmuxMgr      *tmux.Manager
+	launcherMgr  launcher.SessionManager
 	sessions     []models.Session
 	groups       []sessionGroup
 	currentGroup int
@@ -141,13 +173,14 @@ type Model struct {
 	config       *config.Config
 	preview      *Preview
 	showPreview  bool
+	groupMode    string
 }
 
 type sessionLoadedMsg []models.Session
 type errorMsg error
 
 func New(dbClient *db.Client, bmMgr *bookmarks.Manager) (*Model, error) {
-	tmuxMgr := tmux.NewManager("opencode-")
+	launcherMgr := launcher.NewManager("opencode-")
 	keys := defaultKeymap()
 
 	cfg, err := config.Load()
@@ -180,13 +213,18 @@ func New(dbClient *db.Client, bmMgr *bookmarks.Manager) (*Model, error) {
 		list:        l,
 		db:          dbClient,
 		bookmarks:   bmMgr,
-		tmuxMgr:     tmuxMgr,
+		launcherMgr: launcherMgr,
 		keys:        keys,
 		theme:       t,
 		themeName:   themeName,
 		config:      cfg,
 		preview:     preview,
 		showPreview: cfg.ShowPreview,
+		groupMode:   cfg.GroupBy,
+	}
+
+	if m.groupMode == "" {
+		m.groupMode = "time"
 	}
 
 	return m, nil
@@ -205,6 +243,25 @@ func (m *Model) loadSessions() tea.Msg {
 }
 
 func (m *Model) groupSessions(sessions []models.Session) []sessionGroup {
+	switch m.groupMode {
+	case groupDirectory:
+		return m.groupByDirectory(sessions)
+	case groupProject:
+		return m.groupByProject(sessions)
+	case groupAgent:
+		return m.groupByAgent(sessions)
+	case groupCost:
+		return m.groupByCost(sessions)
+	case groupActivity:
+		return m.groupByActivity(sessions)
+	case groupFlat:
+		return m.groupFlat(sessions)
+	default:
+		return m.groupByTime(sessions)
+	}
+}
+
+func (m *Model) groupByTime(sessions []models.Session) []sessionGroup {
 	var bookmarks, today, yesterday, thisWeek, thisMonth, older []models.Session
 	now := time.Now()
 
@@ -250,6 +307,178 @@ func (m *Model) groupSessions(sessions []models.Session) []sessionGroup {
 	}
 
 	return groups
+}
+
+func (m *Model) groupByDirectory(sessions []models.Session) []sessionGroup {
+	var bookmarks, rest []models.Session
+	for _, s := range sessions {
+		if m.bookmarks != nil && m.bookmarks.IsBookmarked(s.ID) {
+			bookmarks = append(bookmarks, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+
+	dirMap := make(map[string][]models.Session)
+	for _, s := range rest {
+		dirMap[s.Directory] = append(dirMap[s.Directory], s)
+	}
+
+	dirs := make([]string, 0, len(dirMap))
+	for d := range dirMap {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+
+	var groups []sessionGroup
+	if len(bookmarks) > 0 {
+		sort.Slice(bookmarks, func(i, j int) bool {
+			return bookmarks[i].UpdatedAt.After(bookmarks[j].UpdatedAt)
+		})
+		groups = append(groups, sessionGroup{Name: "★ Bookmarks", Sessions: bookmarks})
+	}
+
+	for _, dir := range dirs {
+		sort.Slice(dirMap[dir], func(i, j int) bool {
+			return dirMap[dir][i].UpdatedAt.After(dirMap[dir][j].UpdatedAt)
+		})
+		display := filepath.Base(dir)
+		if display == "." || display == "" {
+			display = dir
+		}
+		groups = append(groups, sessionGroup{Name: display, Sessions: dirMap[dir]})
+	}
+
+	return groups
+}
+
+func (m *Model) groupByProject(sessions []models.Session) []sessionGroup {
+	bookmarks, rest := m.splitBookmarks(sessions)
+
+	projMap := make(map[string][]models.Session)
+	for _, s := range rest {
+		name := s.ProjectName
+		if name == "" {
+			name = "no project"
+		}
+		projMap[name] = append(projMap[name], s)
+	}
+
+	names := make([]string, 0, len(projMap))
+	for n := range projMap {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var groups []sessionGroup
+	groups = append(groups, m.bookmarkGroup(bookmarks)...)
+	for _, name := range names {
+		sort.Slice(projMap[name], func(i, j int) bool {
+			return projMap[name][i].UpdatedAt.After(projMap[name][j].UpdatedAt)
+		})
+		groups = append(groups, sessionGroup{Name: name, Sessions: projMap[name]})
+	}
+	return groups
+}
+
+func (m *Model) groupByAgent(sessions []models.Session) []sessionGroup {
+	bookmarks, rest := m.splitBookmarks(sessions)
+
+	agentMap := make(map[string][]models.Session)
+	for _, s := range rest {
+		label := s.Model
+		if label == "" {
+			label = "unknown"
+		}
+		if s.Agent != "" {
+			label = s.Agent + " · " + label
+		}
+		agentMap[label] = append(agentMap[label], s)
+	}
+
+	labels := make([]string, 0, len(agentMap))
+	for l := range agentMap {
+		labels = append(labels, l)
+	}
+	sort.Slice(labels, func(i, j int) bool {
+		return len(agentMap[labels[i]]) > len(agentMap[labels[j]])
+	})
+
+	var groups []sessionGroup
+	groups = append(groups, m.bookmarkGroup(bookmarks)...)
+	for _, label := range labels {
+		sort.Slice(agentMap[label], func(i, j int) bool {
+			return agentMap[label][i].UpdatedAt.After(agentMap[label][j].UpdatedAt)
+		})
+		groups = append(groups, sessionGroup{Name: label, Sessions: agentMap[label]})
+	}
+	return groups
+}
+
+func (m *Model) groupByCost(sessions []models.Session) []sessionGroup {
+	bookmarks, rest := m.splitBookmarks(sessions)
+
+	sort.Slice(rest, func(i, j int) bool {
+		return rest[i].Cost > rest[j].Cost
+	})
+
+	var groups []sessionGroup
+	groups = append(groups, m.bookmarkGroup(bookmarks)...)
+	if len(rest) > 0 {
+		groups = append(groups, sessionGroup{Name: "All Sessions", Sessions: rest})
+	}
+	return groups
+}
+
+func (m *Model) groupByActivity(sessions []models.Session) []sessionGroup {
+	bookmarks, rest := m.splitBookmarks(sessions)
+
+	sort.Slice(rest, func(i, j int) bool {
+		return rest[i].MessageCount > rest[j].MessageCount
+	})
+
+	var groups []sessionGroup
+	groups = append(groups, m.bookmarkGroup(bookmarks)...)
+	if len(rest) > 0 {
+		groups = append(groups, sessionGroup{Name: "All Sessions", Sessions: rest})
+	}
+	return groups
+}
+
+func (m *Model) groupFlat(sessions []models.Session) []sessionGroup {
+	bookmarks, rest := m.splitBookmarks(sessions)
+
+	sort.Slice(rest, func(i, j int) bool {
+		return rest[i].UpdatedAt.After(rest[j].UpdatedAt)
+	})
+
+	var groups []sessionGroup
+	groups = append(groups, m.bookmarkGroup(bookmarks)...)
+	if len(rest) > 0 {
+		groups = append(groups, sessionGroup{Name: "All Sessions", Sessions: rest})
+	}
+	return groups
+}
+
+func (m *Model) splitBookmarks(sessions []models.Session) (bookmarks, rest []models.Session) {
+	for _, s := range sessions {
+		if m.bookmarks != nil && m.bookmarks.IsBookmarked(s.ID) {
+			bookmarks = append(bookmarks, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	return
+}
+
+func (m *Model) bookmarkGroup(bookmarks []models.Session) []sessionGroup {
+	if len(bookmarks) == 0 {
+		return nil
+	}
+	sort.Slice(bookmarks, func(i, j int) bool {
+		return bookmarks[i].UpdatedAt.After(bookmarks[j].UpdatedAt)
+	})
+	return []sessionGroup{{Name: "★ Bookmarks", Sessions: bookmarks}}
 }
 
 func (m *Model) cycleTheme() {
@@ -351,6 +580,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateSizes()
 			return m, nil
 
+		case key.Matches(msg, m.keys.toggleGroup):
+			for i, mode := range groupModes {
+				if mode == m.groupMode {
+					m.groupMode = groupModes[(i+1)%len(groupModes)]
+					break
+				}
+			}
+			m.config.GroupBy = m.groupMode
+			config.Save(m.config)
+			m.groups = m.groupSessions(m.sessions)
+			m.currentGroup = 0
+			m.updateList()
+			return m, nil
+
 		case key.Matches(msg, m.keys.nextTheme):
 			m.cycleTheme()
 			return m, nil
@@ -407,10 +650,10 @@ func (m *Model) updateSizes() {
 	if m.showPreview {
 		listWidth := m.width * 60 / 100
 		previewWidth := m.width - listWidth - 3
-		m.list.SetSize(listWidth, m.height-5)
-		m.preview.SetSize(previewWidth, m.height-5)
+		m.list.SetSize(listWidth, m.height-7)
+		m.preview.SetSize(previewWidth, m.height-7)
 	} else {
-		m.list.SetSize(m.width, m.height-5)
+		m.list.SetSize(m.width, m.height-7)
 	}
 }
 
@@ -422,7 +665,7 @@ func (m *Model) updateList() {
 	group := m.groups[m.currentGroup]
 	items := make([]list.Item, 0, len(group.Sessions))
 
-	activeSessions, _ := m.tmuxMgr.ListOpencodeSessions()
+	activeSessions, _ := m.launcherMgr.ListOpencodeSessions()
 
 	for _, s := range group.Sessions {
 		shortID := s.ShortID()
@@ -501,30 +744,143 @@ func (m *Model) View() string {
 }
 
 func (m *Model) renderHeader() string {
-	themeIndicator := lipgloss.NewStyle().
-		Foreground(m.theme.TextMuted).
-		Render(fmt.Sprintf("[%s]", m.theme.Name))
+	var b strings.Builder
+
+	// Top banner with emoji and mode
+	meta := groupMeta[m.groupMode]
+	bannerStyle := lipgloss.NewStyle().
+		Foreground(m.theme.Primary).
+		Bold(true)
+	sessionCount := len(m.sessions)
+
+	b.WriteString(bannerStyle.Render(fmt.Sprintf("╭── %s sessions · %s %s ", 
+		lipgloss.NewStyle().Foreground(m.theme.Secondary).Render(fmt.Sprintf("%d", sessionCount)),
+		meta.emoji, meta.label)))
+	b.WriteString(bannerStyle.Render(strings.Repeat("─", max(0, m.width-30))))
+	b.WriteString("\n")
 
 	// Group navigation
 	if len(m.groups) > 0 {
-		nav := make([]string, len(m.groups))
-		for i, g := range m.groups {
-			style := lipgloss.NewStyle()
-			if i == m.currentGroup {
-				style = style.Foreground(m.theme.Primary).Bold(true)
-				nav[i] = style.Render(fmt.Sprintf("[%d] %s (%d)", i+1, g.Name, len(g.Sessions)))
-			} else {
-				style = style.Foreground(m.theme.TextMuted)
-				nav[i] = style.Render(fmt.Sprintf("(%d) %s", i+1, g.Name))
+		const maxVisible = 8
+
+		if len(m.groups) <= maxVisible {
+			// Show all groups
+			navParts := m.buildNavParts(0, len(m.groups))
+			densityBar := m.buildDensityBar(0, len(m.groups))
+
+			b.WriteString("  ")
+			b.WriteString(m.groupPositionLabel(len(m.groups)))
+			b.WriteString("  ")
+			b.WriteString(strings.Join(navParts, " "))
+			b.WriteString("\n  ")
+			b.WriteString(densityBar)
+			b.WriteString("\n")
+		} else {
+			// Truncated: neighborhood around current + first/last anchor
+			cur := m.currentGroup
+			start := cur - 2
+			if start < 0 {
+				start = 0
 			}
+			end := start + 5
+			if end > len(m.groups) {
+				end = len(m.groups)
+				start = end - 5
+				if start < 0 {
+					start = 0
+				}
+			}
+
+			navParts := m.buildNavParts(start, end)
+
+			// Add "..." and last group as anchor
+			if end < len(m.groups)-1 {
+				muted := lipgloss.NewStyle().Foreground(m.theme.TextMuted)
+				navParts = append(navParts, muted.Render("…"))
+				last := m.groups[len(m.groups)-1]
+				navParts = append(navParts, muted.Render(fmt.Sprintf("%s (%d)", last.Name, len(last.Sessions))))
+			}
+
+			densityBar := m.buildDensityBar(start, end)
+			if end < len(m.groups) {
+				densityBar += " " + lipgloss.NewStyle().Foreground(m.theme.TextMuted).Render("… ▏")
+			}
+
+			b.WriteString("  ")
+			b.WriteString(m.groupPositionLabel(len(m.groups)))
+			b.WriteString("  ")
+			b.WriteString(strings.Join(navParts, " "))
+			b.WriteString("\n  ")
+			b.WriteString(densityBar)
+			b.WriteString("\n")
 		}
-		groupNav := strings.Join(nav, " ")
-		return lipgloss.NewStyle().Width(m.width).Render(
-			groupNav + " " + themeIndicator,
-		)
 	}
 
-	return themeIndicator
+	b.WriteString(lipgloss.NewStyle().
+		Foreground(m.theme.Border).
+		Render(strings.Repeat("─", m.width)))
+
+	return b.String()
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (m *Model) buildNavParts(start, end int) []string {
+	parts := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		g := m.groups[i]
+		style := lipgloss.NewStyle()
+		if i == m.currentGroup {
+			style = style.Foreground(m.theme.Primary).Bold(true)
+			parts = append(parts, style.Render(fmt.Sprintf("▸%s (%d)", g.Name, len(g.Sessions))))
+		} else {
+			style = style.Foreground(m.theme.TextMuted)
+			parts = append(parts, style.Render(fmt.Sprintf(" %s (%d)", g.Name, len(g.Sessions))))
+		}
+	}
+	return parts
+}
+
+func (m *Model) buildDensityBar(start, end int) string {
+	maxInGroup := 0
+	for _, g := range m.groups {
+		if len(g.Sessions) > maxInGroup {
+			maxInGroup = len(g.Sessions)
+		}
+	}
+
+	barParts := make([]string, end-start)
+	for i := start; i < end; i++ {
+		barLen := 1
+		if maxInGroup > 0 {
+			barLen = (len(m.groups[i].Sessions) * 12) / maxInGroup
+			if barLen < 1 {
+				barLen = 1
+			}
+		}
+		barColor := m.theme.TextMuted
+		if i == m.currentGroup {
+			barColor = m.theme.Primary
+		}
+		barParts[i-start] = lipgloss.NewStyle().Foreground(barColor).Render(strings.Repeat("█", barLen))
+	}
+
+	return lipgloss.NewStyle().
+		Foreground(m.theme.TextMuted).
+		Render("│") + strings.Join(barParts, " ") +
+		lipgloss.NewStyle().Foreground(m.theme.TextMuted).Render("│")
+}
+
+func (m *Model) groupPositionLabel(total int) string {
+	cur := m.currentGroup + 1
+	return lipgloss.NewStyle().
+		Foreground(m.theme.Secondary).
+		Render(fmt.Sprintf("%d/%d", cur, total))
 }
 
 func (m *Model) renderFooter() string {
@@ -547,6 +903,10 @@ func (m *Model) renderFooter() string {
 	}
 
 	parts = append(parts, "t:theme")
+
+	meta := groupMeta[m.groupMode]
+	parts = append(parts, fmt.Sprintf("g:%s %s", meta.emoji, meta.label))
+
 	parts = append(parts, "1-6:groups")
 	parts = append(parts, "/:search")
 	parts = append(parts, "q:quit")

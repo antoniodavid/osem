@@ -15,7 +15,9 @@ type Config struct {
 
 	PreviewWidth int `json:"preview_width"`
 
-	SortBy string `json:"sort_by"`
+	SortBy  string `json:"sort_by"`
+
+	GroupBy string `json:"group_by"`
 }
 
 var DefaultConfig = Config{
@@ -23,7 +25,8 @@ var DefaultConfig = Config{
 	LastGroup:    0,
 	ShowPreview:  true,
 	PreviewWidth: 40,
-	SortBy:       "date",
+	SortBy:  "date",
+	GroupBy: "time",
 }
 
 func Load() (*Config, error) {

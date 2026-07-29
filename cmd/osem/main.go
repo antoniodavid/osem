@@ -13,8 +13,8 @@ import (
 
 	"github.com/adruban/osem/internal/bookmarks"
 	"github.com/adruban/osem/internal/db"
+	"github.com/adruban/osem/internal/launcher"
 	"github.com/adruban/osem/internal/models"
-	"github.com/adruban/osem/internal/tmux"
 	"github.com/adruban/osem/internal/tui"
 )
 
@@ -408,9 +408,9 @@ func openSession(dbClient *db.Client, bmMgr *bookmarks.Manager, sessionID string
 		os.Exit(1)
 	}
 
-	tmuxMgr := tmux.NewManager("opencode-")
+	launcherMgr := launcher.NewManager("opencode-")
 
-	if err := tmuxMgr.OpenSession(session.ID, session.ShortID()); err != nil {
+	if err := launcherMgr.OpenSession(session.ID, session.ShortID()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening session: %v\n", err)
 		os.Exit(1)
 	}
@@ -432,9 +432,9 @@ func runTUI(dbClient *db.Client, bmMgr *bookmarks.Manager) {
 
 	if m, ok := finalModel.(*tui.Model); ok && m.SelectedSession() != nil {
 		session := m.SelectedSession()
-		tmuxMgr := tmux.NewManager("opencode-")
+		launcherMgr := launcher.NewManager("opencode-")
 
-		if err := tmuxMgr.OpenSession(session.ID, session.ShortID()); err != nil {
+		if err := launcherMgr.OpenSession(session.ID, session.ShortID()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening session: %v\n", err)
 			os.Exit(1)
 		}

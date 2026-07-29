@@ -1,12 +1,12 @@
 # osem - OpenCode Session Manager
 
-A fast, terminal-based session manager for OpenCode with SQLite queries and tmux integration.
+A fast, terminal-based session manager for OpenCode with SQLite queries.
 
 ## Features
 
 - **Fast SQLite Queries**: 520x faster than CLI parsing (0.01s vs 5s)
 - **TUI Interface**: Interactive session selector with fuzzy search and date-based grouping
-- **Tmux Integration**: Creates windows/sessions with proper naming
+- **Direct Launch**: Runs `opencode -s <id>` in your current terminal, no multiplexer required
 - **Session Management**: List, open, delete, backup sessions
 - **Bookmarks**: Mark favorite sessions for quick access
 - **Date Filters**: Quick access to today's, yesterday's, or recent sessions
@@ -83,14 +83,15 @@ osem --version       # or -v
 
 Sessions are grouped by date: ★ Bookmarks → Today → Yesterday → This Week → This Month → Older
 
-## Tmux Integration
+## Opening Sessions
 
-When you open a session:
-
-- **Inside tmux**: Creates a new window named `opencode-<session-id>`
-- **Outside tmux**: Creates a new tmux session named `opencode-<session-id>`
+When you open a session, osem runs `opencode -s <session-id>` directly in
+your current terminal. No tmux sessions or windows are created.
 
 OpenCode automatically changes to the session's stored directory.
+
+When running inside a herdr environment (`HERDR_ENV=1`), osem splits a herdr
+pane and runs opencode there instead.
 
 ## Commands
 
@@ -127,7 +128,7 @@ osem/
 │   ├── db/sqlite.go       # SQLite queries
 │   ├── models/            # Data models
 │   ├── tui/               # Bubbletea TUI
-│   ├── tmux/manager.go   # Tmux integration
+│   ├── launcher/manager.go # Direct & herdr launchers
 │   └── bookmarks/         # Favorites management
 ├── go.mod
 ├── Makefile
@@ -166,4 +167,4 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Author
 
-Created for managing OpenCode sessions efficiently with tmux integration.
+Created for managing OpenCode sessions efficiently.

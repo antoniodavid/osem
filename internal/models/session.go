@@ -13,6 +13,11 @@ type Session struct {
 	MessageCount int       `json:"message_count"`
 	IsFavorite   bool      `json:"is_favorite"`
 	TmuxSession  *string   `json:"tmux_session,omitempty"`
+
+	Agent       string  `json:"agent"`
+	Model       string  `json:"model"`
+	Cost        float64 `json:"cost"`
+	ProjectName string  `json:"project_name"`
 }
 
 type SessionWithMetadata struct {
